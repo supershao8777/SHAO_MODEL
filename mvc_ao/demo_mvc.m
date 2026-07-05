@@ -17,7 +17,7 @@ addpath(scriptDir);
 addpath(genpath(fullfile(scriptDir, '..')));
 
 %% ================== Load Dataset ==================
-dataName = 'CCV_fea';
+dataName = 'Yale';
 fprintf('Loading dataset: %s\n', dataName);
 dsPath = 'D:\BaiduNetdiskDownload\Multi-view datasets\';
 load([dsPath dataName]);
@@ -25,7 +25,7 @@ load([dsPath dataName]);
 % Data preparation
 % Raw .mat: X{i} is already n × d_i (samples × features) — NO transpose needed
 %
-% Y = y;
+ Y = y;
 
 % Normalize each view to [0,1] range
 for i = 1:length(X)
@@ -104,7 +104,7 @@ for mi = 1:length(m_grid)
             try
                 [Rq, ~, ~, ~, obj_q] = mvc_ao(X, c, m_grid(mi), alpha_grid(ai), gamma_grid(gi), opts_q);
                 [~, yq] = max(Rq, [], 2);
-                res_q = myNMIACCwithmean(Rq, Y, c);
+                res_q = myNMIACCwithmean_xxl(Rq, Y, c);
                 fprintf('%-8d %-8.2f %-8.2f %-10.4f %-10.4f %-10.2e\n', ...
                         m_grid(mi), alpha_grid(ai), gamma_grid(gi), res_q(1), res_q(2), obj_q(end));
 

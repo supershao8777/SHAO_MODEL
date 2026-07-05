@@ -23,7 +23,7 @@ function [R, Ps, Q, A, obj_history] = mvc_ao(X, c, m, alpha, gamma, opts)
 %
 %   Outputs:
 %     R      — n × c, shared soft cluster indicator (row-stochastic)
-%     Ps     — c × m, shared cluster prototype (orthogonal: Ps*Ps'=I)
+%     Ps     — c × m, shared cluster prototype (unconstrained)
 %     Q      — {1×V} cell, Q{v} is c × m view-specific offset
 %     A      — {1×V} cell, A{v} is m × d_v anchor dictionary
 %     obj    — objective value history
@@ -31,7 +31,7 @@ function [R, Ps, Q, A, obj_history] = mvc_ao(X, c, m, alpha, gamma, opts)
 %   Variables summary:
 %     X^{(v)} : n × d_v    Original features (view v)
 %     R       : n × c      Shared soft cluster assignment (simplex)
-%     Ps      : c × m      Shared cluster→anchor prototype (orthogonal)
+%     Ps      : c × m      Shared cluster→anchor prototype (unconstrained)
 %     Q^{(v)} : c × m      View-specific prototype offset (unconstrained)
 %     A^{(v)} : m × d_v    Anchor→feature dictionary (unconstrained)
 %
@@ -47,10 +47,12 @@ cg_tol      = get_opt(opts, 'cg_tol',      1e-5);
 tol         = get_opt(opts, 'tol',         1e-4);
 verbose     = get_opt(opts, 'verbose',     true);
 
+for v=1:length(X)
+    X{v}=zscore(X{v});
+end
 %% Validate dimensions
 V = length(X);          % number of views
 [n, ~] = size(X{1});    % samples (all views have same n)
-assert(c <= m, 'Need c <= m for orthogonality constraint Ps*Ps''=I (c × m matrix).');
 
 % Feature dimensions per view
 d = zeros(1, V);
@@ -69,13 +71,11 @@ end
 % --- Initialize R (K-means on concatenated features) ---
 X_cat = horzcat(X{:});          % n × Σd_v
 rng(42, 'twister');
-[label, ~] = kmeans(X_cat, c, 'MaxIter', 100, 'Replicates', 10);
+[label, ~] = kmeans(X_cat, c, 'MaxIter', 500, 'Replicates', 10);
 R = full(sparse(1:n, label, 1, n, c));   % one-hot → soft label
 
-% --- Initialize Ps (random + orthogonalize) ---
-Ps = randn(c, m);
-[U, ~, V_svd] = svd(Ps, 'econ');
-Ps = U * V_svd';                % Ps * Ps' = I_c
+% --- Initialize Ps (random, no constraint) ---
+Ps = randn(c, m) * 0.01;
 
 % --- Initialize Q (zeros: all views start with same prototype) ---
 Q = cell(1, V);
@@ -88,7 +88,7 @@ A = cell(1, V);
 for v = 1:V
     if n >= m
         % Use K-means to get m representative points as initial anchors
-        [~, Cv] = kmeans(X{v}, m, 'MaxIter', 50, 'Replicates', 5);
+        [~, Cv] = kmeans(X{v}, m, 'MaxIter', 100, 'Replicates', 5);
         A{v} = Cv;               % m × d_v
     else
         % If fewer samples than anchors, use all data + random padding
@@ -138,10 +138,10 @@ for iter = 1:max_iter
         Q{v} = matrix_cg(L_op, B_Q, Q{v}, cg_max_iter, cg_tol);
     end
 
-    %% Step 3: Update Ps (shared prototype with orthogonality constraint)
-    %   Solve: M·Ps·S_total = G_total, then project to Stiefel manifold.
-    %   S_total = Σ_v A^{(v)}·(A^{(v)})^T  [m × m]
-    %   G_total = Σ_v R^T·(X^{(v)} - R·Q^{(v)}·A^{(v)})·(A^{(v)})^T  [c × m]
+    %% Step 3: Update Ps (unconstrained, closed-form bilateral division)
+    %   M·Ps·S = G  →  Ps = M \ G / S
+    %   M = R^T·R  [c×c],  S = Σ_v A^{(v)}(A^{(v)})^T  [m×m]
+    %   G = Σ_v R^T·(X^{(v)} - R·Q^{(v)}·A^{(v)})·(A^{(v)})^T  [c×m]
     Stotal = zeros(m, m);
     Gtotal = zeros(c, m);
     for v = 1:V
@@ -151,19 +151,8 @@ for iter = 1:max_iter
         Gtotal = Gtotal + R' * Ev_Q * A{v}';
     end
 
-    % Add small ridge for numerical stability
-    Stotal_reg = Stotal + epsilon * eye(m);
-    M_reg = M + epsilon * eye(c);
-
-    % Linear operator: L(P) = M_reg·P·Stotal_reg
-    L_op_ps = @(Pmat) M_reg * Pmat * Stotal_reg;
-
-    % Solve via CG
-    Ps_unc = matrix_cg(L_op_ps, Gtotal, Ps, cg_max_iter, cg_tol);
-
-    % Project to Stiefel manifold: Ps·Ps' = I_c
-    [U_ps, ~, V_ps] = svd(Ps_unc, 'econ');
-    Ps = U_ps * V_ps';
+    % Add small ridge for numerical stability, then solve bilaterally
+    Ps = (M + epsilon * eye(c)) \ Gtotal / (Stotal + epsilon * eye(m));
 
     %% Step 4: Update R (soft cluster indicator, simplex constraint)
     %   PGD: R ← Π_Δ(R - η·∇_R)
