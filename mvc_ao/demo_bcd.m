@@ -18,17 +18,17 @@ addpath(scriptDir);
 addpath(genpath(fullfile(scriptDir, '..')));
 
 %% ================== Load Dataset ==================
-dataName = 'NGs_fea';
+dataName = 'NUS-WIDE-OBJ';
 fprintf('Loading dataset: %s\n', dataName);
 dsPath = 'D:\BaiduNetdiskDownload\Multi-view datasets\';
 load([dsPath dataName]);
-X=data;
+%X=data;
 % Data preparation: X{v} is n × d_v
-Y = gt;
+Y = y;
 
 % Z-score normalize each view
 for i = 1:length(X)
-    X{i} = zscore(X{i}');
+    X{i} = zscore(X{i});
 end
 
 c = length(unique(Y));     % number of clusters
