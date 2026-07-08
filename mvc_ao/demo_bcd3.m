@@ -6,7 +6,7 @@ addpath(scriptDir);
 addpath(genpath(fullfile(scriptDir, '..')));
 
 %% ================== Load Dataset ==================
-dataName = 'Caltech101-7';
+dataName = 'Caltech101-all';
 fprintf('Loading dataset: %s\n', dataName);
 dsPath = 'D:\BaiduNetdiskDownload\Multi-view datasets\';
 load([dsPath dataName]);
@@ -57,7 +57,7 @@ for mi = 1:length(m_grid)
             try
                 t0 = tic;
                 % 网格搜索阶段调用核心算法
-                [~, ~, ~, ~, Sq, obj_q] = bcd_mvrl4(X, m_grid(mi), c, ...
+                [~, ~, ~, ~, Sq, obj_q] = bcd_mvrl3(X, m_grid(mi), c, ...
                     lambda_grid(li), gamma_grid(gi), opts_q);
                 t1 = toc(t0);
                 
@@ -97,7 +97,7 @@ opts.max_iter = 100; opts.verbose = true;
 
 tic;
 % 利用网格搜索出的最优超参数运行最终的精调
-[R_b, Ps_b, Q_b, A_b, S_b, obj_b] = bcd_mvrl4(X, best_m, c, best_lambda, best_gamma, opts);
+[R_b, Ps_b, Q_b, A_b, S_b, obj_b] = bcd_mvrl3(X, best_m, c, best_lambda, best_gamma, opts);
 t_b = toc;
 
 res_b = myNMIACCwithmean(S_b', Y, c);
