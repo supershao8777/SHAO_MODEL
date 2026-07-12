@@ -158,19 +158,16 @@ for iter = 1:max_iter
         G_Ps = G_Ps - (1 + lambda) * Q{v} * (A{v} * A{v}');  % offset term
     end
 
-    % Bilateral division: Ps_unc * S_reg = G_Ps/(1+λ)
-    Ps_unc = G_Ps / ((1 + lambda) * S_AA + epsilon * eye(c));  % m × c
+    % 老师思路对应的正确代码解法
+    [U_ps, ~, V_ps] = svd(G_Ps, 'econ');
+    Ps = U_ps * V_ps';
 
-    % SVD projection to Stiefel: Ps^T Ps = I_c
-    [U_ps, ~, V_ps] = svd(Ps_unc, 'econ');
-    Ps = U_ps * V_ps';                             % m × c
 
-    %% Step 5: Update Q^{(v)} (closed-form, unconstrained)
+%% Step 5: Update Q^{(v)} (closed-form, unconstrained)
     %   (1+λ) Q_v (A_v A_v^T) = G_Qv
     %   G_Qv = R_v^T X_v A_v^T + λ S A_v^T - (1+λ) Ps A_v A_v^T
     for v = 1:V
         S_Av = A{v} * A{v}';                       % c × c
-
         G_Qv = R{v}' * X{v} * A{v}';               % m × c  (recon term)
         G_Qv = G_Qv + lambda * S * A{v}';          % m × c  (consensus term)
         G_Qv = G_Qv - (1 + lambda) * Ps * S_Av;    % m × c  (Ps term)
@@ -205,6 +202,15 @@ for iter = 1:max_iter
                 iter, obj, rel_change, obj_rec, lambda*obj_cons);
     end
 
+    % Ps/Q 幅值对比 (每 10 轮及收敛时打印)
+    if verbose && (mod(iter, 10) == 0 || (iter > 1 && rel_change < tol))
+        fprintf('  --- 【幅值对比】 iter=%d ---\n', iter);
+        fprintf('  Ps 的幅值: %.4f\n', norm(Ps, 'fro'));
+        for v = 1:V
+            fprintf('  视图 %d 的 Q 幅值: %.4f\n', v, norm(Q{v}, 'fro'));
+        end
+    end
+
     if iter > 1 && rel_change < tol
         if verbose
             fprintf('  Converged at iteration %d (rel_change < %.0e).\n', iter, tol);
@@ -216,6 +222,15 @@ end
 
 if verbose && iter >= max_iter
     fprintf('  Max iterations reached (%d).\n', max_iter);
+end
+
+% 最终幅值对比
+if verbose
+    fprintf('\n  ===== 【最终幅值对比】 =====\n');
+    fprintf('  Ps 的幅值: %.4f\n', norm(Ps, 'fro'));
+    for v = 1:V
+        fprintf('  视图 %d 的 Q 幅值: %.4f\n', v, norm(Q{v}, 'fro'));
+    end
 end
 
 %% Final summary

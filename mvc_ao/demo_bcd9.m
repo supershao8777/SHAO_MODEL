@@ -15,7 +15,7 @@ addpath(genpath(fullfile(scriptDir, '..')));
 addpath(genpath(fullfile(scriptDir, '..', 'measure')));
 
 %% ================== 加载数据集 ==================
-dataName = 'Wikipedia';
+dataName = 'UCI';
 fprintf('加载数据集: %s\n', dataName);
 dsPath = 'D:\BaiduNetdiskDownload\Multi-view datasets\';
 load([dsPath dataName]);

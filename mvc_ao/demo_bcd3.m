@@ -6,7 +6,7 @@ addpath(scriptDir);
 addpath(genpath(fullfile(scriptDir, '..')));
 
 %% ================== Load Dataset ==================
-dataName = 'Caltech101-all';
+dataName ='Reuters';
 fprintf('Loading dataset: %s\n', dataName);
 dsPath = 'D:\BaiduNetdiskDownload\Multi-view datasets\';
 load([dsPath dataName]);
@@ -15,7 +15,7 @@ Y = y;
 
 % BCD_MVRL3 expects X{v} as d_v × n (features × samples)
 for i = 1:length(X)
-    X{i} = zscore(X{i}');       % → d_v × n
+    X{i} = normalize(X{i}');       % → d_v × n
 end
 
 c = length(unique(Y));
@@ -33,10 +33,9 @@ addpath(genpath(fullfile(scriptDir, '..', 'measure')));
 
 %% ================== Grid Search ==================
 fprintf('\n\n=== Grid Search ===\n');
-m_grid      = [c, 2*c, 3*c,7*c];
-lambda_grid = [0.01, 0.1, 1, 10, 100];
-gamma_grid  = [0.001, 0.01, 0.1, 1, 10];
-
+m_grid      = [2*c ];
+lambda_grid = [0.01 0.1 1 10, 100];
+gamma_grid  = [0.01, 0.1, 1, 10 100];
 % 取消了数据维度安全过滤机制，强制使用用户定义的 m_grid
 fprintf('m range: [%s]\n', num2str(m_grid));
 fprintf('%-6s %-8s %-8s %-10s %-10s %-10s %-8s\n', ...
@@ -58,7 +57,7 @@ for mi = 1:length(m_grid)
                 t0 = tic;
                 % 网格搜索阶段调用核心算法
                 [~, ~, ~, ~, Sq, obj_q] = bcd_mvrl3(X, m_grid(mi), c, ...
-                    lambda_grid(li), gamma_grid(gi), opts_q);
+                    lambda_grid(li), gamma_grid(gi),opts_q);
                 t1 = toc(t0);
                 
                 % 评估聚类结果
