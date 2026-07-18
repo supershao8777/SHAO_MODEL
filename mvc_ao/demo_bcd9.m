@@ -15,7 +15,7 @@ addpath(genpath(fullfile(scriptDir, '..')));
 addpath(genpath(fullfile(scriptDir, '..', 'measure')));
 
 %% ================== 加载数据集 ==================
-dataName = 'UCI';
+dataName = 'Caltech101-7';
 fprintf('加载数据集: %s\n', dataName);
 dsPath = 'D:\BaiduNetdiskDownload\Multi-view datasets\';
 load([dsPath dataName]);
@@ -37,7 +37,7 @@ end
 
 %% ================== 网格搜索 ==================
 fprintf('\n\n=== 网格搜索 ===\n');
-m_grid      = [c 2*c 3*c ];
+m_grid      = [c 2*c ];
 lambda_grid = [0.01, 0.1, 1, 10, 100];
 beta_grid   = [0.01 0.1 1, 10, 100, 1000];
 
@@ -64,7 +64,6 @@ for mi = 1:length(m_grid)
                     lambda_grid(li), beta_grid(bi), opts_q);
                 t1 = toc(t0);
                 res_q = myNMIACCwithmean(Sq', Y, c);
-
                 fprintf('%-6d %-8.2f %-8.1f %-10.4f %-10.4f %-10.2e %6.1fs [%d/%d]\n', ...
                         m_grid(mi), lambda_grid(li), beta_grid(bi), ...
                         res_q(1), res_q(2), obj_q(end), t1, cnt, total);

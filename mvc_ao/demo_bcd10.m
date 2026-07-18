@@ -1,9 +1,7 @@
-% demo_bcd10.m  —  BCD-MVRL12 演示 (Procrustes R + Ps-only consensus)
+% demo_bcd10.m  —  BCD-MVRL19 (doubly-stochastic C + Sinkhorn)
 %
 %  Objective:
-%    L = Σ_v ||X - R(Ps+Q)Z||² + λ||Ps Z - S||²
-%
-%  Constraints: R^T R=I_m, Ps^T Ps=I_c, Z/S col-simplex
+%    Σ||X-R(Ps+Q)Z||²+λ||C Ps Z-S||²+μ⟨D,C⟩+γ||Z||²
 
 clear; clc; warning off;
 
@@ -13,11 +11,11 @@ addpath(genpath(fullfile(scriptDir, '..')));
 addpath(genpath(fullfile(scriptDir, '..', 'measure')));
 
 %% Load dataset
-dataName = 'NGs_fea';
+dataName = 'Animal';
 fprintf('Loading: %s\n', dataName);
 load(['D:\BaiduNetdiskDownload\Multi-view datasets\' dataName]);
-Y = gt; X = data;
-for i = 1:length(X), X{i} = zscore(X{i}); end
+Y = y; %X = data;
+for i = 1:length(X), X{i} = zscore(X{i}'); end
 
 c = length(unique(Y)); n = length(Y); V = length(X);
 fprintf('Samples: %d, Classes: %d, Views: %d\n', n, c, V);
@@ -25,7 +23,7 @@ fprintf('Samples: %d, Classes: %d, Views: %d\n', n, c, V);
 %% Grid search
 fprintf('\n=== Grid Search ===\n');
 m_grid   = [c, 2*c, 3*c];
-lam_grid = [0.01, 0.1, 1, 10, 100];
+lam_grid = [0.001,0.01, 0.1, 1, 10, 100,1000];
 
 fprintf('%-4s %-7s %-9s %-9s %-9s %-7s\n', 'm','λ','ACC','NMI','Obj','Time');
 fprintf('%-4s %-7s %-9s %-9s %-9s %-7s\n', '--','----','---','---','---','----');
@@ -39,7 +37,7 @@ for mi = 1:length(m_grid)
         cnt = cnt + 1;
         try
             t0 = tic;
-            [~, ~, ~, ~, Sq, obj_q] = bcd_mvrl12(X, m_grid(mi), c, lam_grid(li), opts_q);
+            [~, ~, ~, ~, Sq, ~, obj_q] = bcd_mvrl19(X, m_grid(mi), c, lam_grid(li), 0.1, 0.01, opts_q);
             t1 = toc(t0);
             res_q = myNMIACCwithmean(Sq', Y, c);
 
@@ -66,7 +64,7 @@ opts.max_iter = 200; opts.pgd_steps = 5; opts.alpha_P = 1e-3; opts.alpha_Z = 1e-
 opts.verbose = true;
 
 tic;
-[R_b, Ps_b, Q_b, Z_b, S_b, obj_b] = bcd_mvrl12(X, best_m, c, best_l, opts);
+[R_b, Ps_b, Q_b, Z_b, S_b, ~, obj_b] = bcd_mvrl19(X, best_m, c, best_l, 0.1, 0.01, opts);
 t_b = toc;
 
 res_b = myNMIACCwithmean(S_b', Y, c);
@@ -76,5 +74,5 @@ fprintf('\nRefined: ACC=%.4f NMI=%.4f Purity=%.4f F=%.4f Time=%.1fs\n', ...
 figure;
 semilogy(obj_b, 'r-', 'LineWidth', 1.5);
 xlabel('Iter'); ylabel('Loss');
-title(sprintf('BCD-MVRL12 (m=%d,\\lambda=%.2f) ACC=%.4f', best_m, best_l, best_acc));
+title(sprintf('BCD-MVRL19 (m=%d,\\lambda=%.2f) ACC=%.4f', best_m, best_l, best_acc));
 grid on;

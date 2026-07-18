@@ -13,7 +13,7 @@ function [R, Ps, Q, A, S, obj_history] = bcd_mvrl3(X, m, c, lambda, gamma, opts)
 %     Ps  : m×c,     Ps^T Ps = I_c                     (orthogonal prototype)
 %     Q{v}: m×c,     unconstrained                      (view-specific offset)
 %     A{v}: c×n,     A{v} ≥ 0, (A{v})^T 1_c = 1_n    (column-stochastic)
-%     S   : m×n,     S ≥ 0, S^T 1_m = 1_n             (consensus, col-stochastic)
+%     S   : m×n,     S S^T = I_m                       (row-orthogonal, Procrustes)
 %
 %   NOTE: Q^{(v)} is now UNCONSTRAINED (no Q^T Ps = 0 requirement).
 %         Ps and Q use closed-form bilateral division instead of gradient descent.
@@ -92,7 +92,7 @@ for v = 1:V
 end
 
 % --- S (m × n, column-stochastic) ---
-S = col_simplex_project(rand(m, n));
+[S_tmp,~]=qr(randn(n,m),0);S=S_tmp';  % S S^T = I_m (row-orthogonal)
 
 % --- A^{(v)} (c × n, column-stochastic) ---
 A = cell(1, V);
@@ -110,14 +110,17 @@ end
 obj_history = zeros(max_iter, 1);
 
 for iter = 1:max_iter
-    %% Step 1: Update S (consensus, column-simplex projection)
-    %   S = simplex_project( (1/V) Σ_v (Ps+Q^{(v)}) A^{(v)} )
-    S_mean = zeros(m, n);
+    %% Step 1: Update S (Orthogonal Procrustes: S S^T = I_m)
+    %   F = (1/V) Σ (Ps+Q) A [m×n]
+    %   SVD(F) → S = U V^T
+    F_S = zeros(m, n);
     for v = 1:V
-        Zv = Ps + Q{v};                            % m × c
-        S_mean = S_mean + Zv * A{v};               % (m×c) × (c×n) = m×n
+        Zv = Ps + Q{v};
+        F_S = F_S + Zv * A{v};
     end
-    S = col_simplex_project(S_mean / V);             % ≥0, col-sum=1
+    F_S = F_S / V;
+    [U_S, ~, V_S] = svd(F_S, 'econ');
+    S = U_S * V_S';                                  % S S^T = I_m
 
     %% Step 2: Update A^{(v)} (ridge regression + column-simplex)
     %   B = Ps + Q^{(v)}  [m × c]
@@ -158,16 +161,19 @@ for iter = 1:max_iter
         G_Ps = G_Ps - (1 + lambda) * Q{v} * (A{v} * A{v}');  % offset term
     end
 
-    % 老师思路对应的正确代码解法
-    [U_ps, ~, V_ps] = svd(G_Ps, 'econ');
-    Ps = U_ps * V_ps';
+    % Bilateral division: Ps_unc * S_reg = G_Ps/(1+λ)
+    Ps_unc = G_Ps / ((1 + lambda) * S_AA + epsilon * eye(c));  % m × c
 
+    % SVD projection to Stiefel: Ps^T Ps = I_c
+    [U_ps, ~, V_ps] = svd(Ps_unc, 'econ');
+    Ps = U_ps * V_ps';                             % m × c
 
-%% Step 5: Update Q^{(v)} (closed-form, unconstrained)
+    %% Step 5: Update Q^{(v)} (closed-form, unconstrained)
     %   (1+λ) Q_v (A_v A_v^T) = G_Qv
     %   G_Qv = R_v^T X_v A_v^T + λ S A_v^T - (1+λ) Ps A_v A_v^T
     for v = 1:V
         S_Av = A{v} * A{v}';                       % c × c
+
         G_Qv = R{v}' * X{v} * A{v}';               % m × c  (recon term)
         G_Qv = G_Qv + lambda * S * A{v}';          % m × c  (consensus term)
         G_Qv = G_Qv - (1 + lambda) * Ps * S_Av;    % m × c  (Ps term)
@@ -202,15 +208,6 @@ for iter = 1:max_iter
                 iter, obj, rel_change, obj_rec, lambda*obj_cons);
     end
 
-    % Ps/Q 幅值对比 (每 10 轮及收敛时打印)
-    if verbose && (mod(iter, 10) == 0 || (iter > 1 && rel_change < tol))
-        fprintf('  --- 【幅值对比】 iter=%d ---\n', iter);
-        fprintf('  Ps 的幅值: %.4f\n', norm(Ps, 'fro'));
-        for v = 1:V
-            fprintf('  视图 %d 的 Q 幅值: %.4f\n', v, norm(Q{v}, 'fro'));
-        end
-    end
-
     if iter > 1 && rel_change < tol
         if verbose
             fprintf('  Converged at iteration %d (rel_change < %.0e).\n', iter, tol);
@@ -222,15 +219,6 @@ end
 
 if verbose && iter >= max_iter
     fprintf('  Max iterations reached (%d).\n', max_iter);
-end
-
-% 最终幅值对比
-if verbose
-    fprintf('\n  ===== 【最终幅值对比】 =====\n');
-    fprintf('  Ps 的幅值: %.4f\n', norm(Ps, 'fro'));
-    for v = 1:V
-        fprintf('  视图 %d 的 Q 幅值: %.4f\n', v, norm(Q{v}, 'fro'));
-    end
 end
 
 %% Final summary

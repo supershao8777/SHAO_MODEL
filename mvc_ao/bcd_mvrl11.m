@@ -6,14 +6,14 @@ function [R, Ps, Q, A, S, obj_history] = bcd_mvrl11(X, m, c, lambda, beta, opts)
 %   Objective:
 %     J = Σ_v ||X^{(v)} - R^{(v)}(Ps+Q^{(v)})A^{(v)}||_F^2
 %       + λ Σ_v ||(Ps+Q^{(v)})A^{(v)} - S||_F^2
-%       + β Σ_v ||Q^{(v)} A^{(v)}||_F^2
+%       + β Σ_v ||Q^{(v)} A^{(v)}||_1                      ← element-wise L1
 %
 %   Constraints:
 %     R{v}: d_v×m,   (R{v})^T R{v} = I_m              (orthogonal projection)
 %     Ps  : m×c,     Ps^T Ps = I_c                     (orthogonal prototype)
 %     Q{v}: m×c,     unconstrained                      (view-specific offset)
 %     A{v}: c×n,     A{v} ≥ 0, (A{v})^T 1_c = 1_n    (col-stochastic, Duchi)
-%     S   : m×n,     S ≥ 0, S^T 1_m = 1_n             (col-stochastic, Duchi)
+%     S   : m×n,     S S^T = I_m                       (row-orthogonal, Procrustes)
 %
 %   Update order: R → Q → Ps → A → S
 %
@@ -22,7 +22,6 @@ function [R, Ps, Q, A, S, obj_history] = bcd_mvrl11(X, m, c, lambda, beta, opts)
 %% Parse options
 if nargin < 6, opts = struct(); end
 max_iter = get_opt(opts, 'max_iter', 100);
-eta_Ps   = get_opt(opts, 'eta_Ps',   1e-3);
 verbose  = get_opt(opts, 'verbose',  true);
 
 %% Dimensions
@@ -35,8 +34,8 @@ if verbose
     fprintf('Samples: %d, m: %d, c: %d, Views: %d\n', n, m, c, V);
     fprintf('λ=%.4f, β=%.4f\n', lambda, beta);
     fprintf('R: d_v×m (R^T R=I_m), Ps: m×c (Ps^T Ps=I_c), Q: m×c\n');
-    fprintf('A: c×n (Duchi simplex), S: m×n (Duchi simplex)\n');
-    fprintf('Update: R(Procrustes) → Q(closed+ReLU) → Ps(Riemannian+QR) → A(PGD+Duchi) → S(Duchi)\n');
+    fprintf('A: c×n (Duchi simplex), S: m×n (S S^T=I_m Procrustes)\n');
+    fprintf('Update: R(Procrustes) → Q(PGD+soft-threshold) → Ps(Procrustes SVD) → A(PGD+Duchi) → S(Procrustes)\n');
 end
 
 for v = 1:V
@@ -82,8 +81,8 @@ for v = 1:V
     A{v} = duchi_simplex_project(rand(c, n));
 end
 
-% --- S (m × n, Duchi simplex) ---
-S = duchi_simplex_project(rand(m, n));
+% --- S (m × n, row-orthogonal) ---
+[S_tmp,~]=qr(randn(n,m),0);S=S_tmp';  % S S^T = I_m
 
 % Initial objective
 obj_old = calc_objective(X, R, Ps, Q, A, S, lambda, beta);
@@ -106,44 +105,34 @@ for iter = 1:max_iter
         R{v} = U_R * V_R';                           % d_v × m, R^T R = I_m
     end
 
-    %% Step 2: Update Q^{(v)} (closed-form + ReLU)
-    %   left_term = R^T R + (λ+β)I_m  [m × m]
-    %   Solve: left_term · Q · (A A^T) = right_term  [m × c]
-    %   Q = max(left_term \ right_term / (AA^T + εI), 0)
+    %% Step 2: Update Q^{(v)} (PGD + element-wise soft-threshold for L1 on QA)
+    %   Smooth gradient: ∇Q = 2 R^T(R(Ps+Q)A - X)A^T + 2λ((Ps+Q)A - S)A^T
+    %   Q ← soft(Q - η·∇Q, η·β)  (element-wise L1 proximal)
     for v = 1:V
-        RtR = R{v}' * R{v};                          % m × m
-        AAT = A{v} * A{v}';                          % c × c
+        L_Q = 2 * norm(R{v}'*R{v}, 2) * norm(A{v}*A{v}', 2) ...
+             + 2 * lambda * norm(A{v}*A{v}', 2);
+        eta_Q = 1 / max(L_Q, eps_reg);
 
-        left_Q = RtR + (lambda + beta) * eye(m);     % m × m
-        right_Q = R{v}' * X{v} * A{v}' ...
-                + lambda * S * A{v}' ...
-                - (RtR + lambda * eye(m)) * Ps * AAT; % m × c
+        Mv = Ps + Q{v};
+        E1 = R{v} * Mv * A{v} - X{v};
+        E2 = Mv * A{v} - S;
+        grad_Q = 2 * R{v}' * E1 * A{v}' + 2 * lambda * E2 * A{v}';
+        Q_tilde = Q{v} - eta_Q * grad_Q;
 
-        Q{v} = left_Q \ right_Q / (AAT + eps_reg * eye(c));  % m × c
-        Q{v} = max(Q{v}, 0);                         % ReLU: Q ≥ 0
+        % Element-wise soft-threshold (L1 proximal)
+        Q{v} = sign(Q_tilde) .* max(abs(Q_tilde) - eta_Q * beta, 0);
     end
 
-    %% Step 3: Update Ps (Riemannian gradient + QR, Ps^T Ps = I_c)
-    %   Euclidean grad: ∇Ps = Σ_v [-2 R^T(X - R(Ps+Q)A)A^T + 2λ((Ps+Q)A - S)A^T]
-    %   Riemannian: Gr = G - Ps·sym(Ps^T G)
-    %   Y = Ps - η·Gr, [Q_r,~]=qr(Y,0), Ps = Q_r
-    G = zeros(m, c);
+    %% Step 3: Update Ps (Orthogonal Procrustes via SVD)
+    %   H = Σ_v [R^T X A^T + λ S A^T - (1+λ) Q A A^T]
+    %   SVD(H) → Ps = U V^T
+    H_Ps = zeros(m, c);
     for v = 1:V
-        Kv = Ps + Q{v};                              % m × c
-        E1 = X{v} - R{v} * Kv * A{v};                % d_v × n
-        G = G - 2 * R{v}' * E1 * A{v}';              % m × c (recon)
-        E2 = Kv * A{v} - S;                           % m × n
-        G = G + 2 * lambda * E2 * A{v}';             % m × c (consensus)
+        H_Ps = H_Ps + R{v}' * X{v} * A{v}' + lambda * S * A{v}' ...
+               - (1 + lambda) * Q{v} * A{v} * A{v}';
     end
-
-    % Riemannian gradient on Stiefel
-    sym_PsTG = (Ps' * G + G' * Ps) / 2;
-    Gr = G - Ps * sym_PsTG;                          % Riemannian gradient
-
-    % QR retraction
-    Y_ps = Ps - eta_Ps * Gr;
-    [Q_r, ~] = qr(Y_ps, 0);
-    Ps = Q_r;                                        % Ps^T Ps = I_c
+    [U_P, ~, V_P] = svd(H_Ps, 'econ');
+    Ps = U_P * V_P';                                 % Ps^T Ps = I_c
 
     %% Step 4: Update A^{(v)} (PGD + Duchi simplex projection)
     %   K = Ps+Q  [m × c]
@@ -166,12 +155,14 @@ for iter = 1:max_iter
         A{v} = duchi_simplex_project(A{v});          % col-simplex
     end
 
-    %% Step 5: Update S (mean + Duchi simplex projection)
-    S_mean = zeros(m, n);
+    %% Step 5: Update S (Orthogonal Procrustes: S S^T = I_m)
+    F_S = zeros(m, n);
     for v = 1:V
-        S_mean = S_mean + (Ps + Q{v}) * A{v};        % m × n
+        F_S = F_S + (Ps + Q{v}) * A{v};              % m × n
     end
-    S = duchi_simplex_project(S_mean / V);
+    F_S = F_S / V;
+    [U_S, ~, V_S] = svd(F_S, 'econ');
+    S = U_S * V_S';                                   % S S^T = I_m
 
     %% Objective & Convergence
     [obj_new, obj_rec, obj_cons, obj_qa] = calc_objective(X, R, Ps, Q, A, S, lambda, beta);
@@ -233,7 +224,7 @@ for v = 1:length(X)
     Kv = Ps + Q{v};
     obj_rec  = obj_rec  + norm(X{v} - R{v} * Kv * A{v}, 'fro')^2;
     obj_cons = obj_cons + norm(Kv * A{v} - S, 'fro')^2;
-    obj_qa   = obj_qa   + norm(Q{v} * A{v}, 'fro')^2;
+    obj_qa   = obj_qa   + sum(sum(abs(Q{v} * A{v})));
 end
 obj = obj_rec + lambda * obj_cons + beta * obj_qa;
 end
