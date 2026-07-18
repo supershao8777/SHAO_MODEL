@@ -8,7 +8,7 @@ scriptDir = fileparts(mfilename('fullpath'));
 addpath(scriptDir);addpath(genpath(fullfile(scriptDir,'..')));
 addpath(genpath(fullfile(scriptDir,'..','measure')));
 
-dataName='Caltech101-20';fprintf('Loading: %s\n',dataName);
+dataName='Caltech101-7';fprintf('Loading: %s\n',dataName);
 load(['D:\BaiduNetdiskDownload\Multi-view datasets\' dataName]);
 Y=y;
 %X=data;
@@ -18,7 +18,7 @@ fprintf('Samples:%d Classes:%d Views:%d\n',n,c,V);
 
 %% Grid (m, λ, μ, β)
 fprintf('\n=== Grid ===\n');
-m_grid=[c,2*c,3*c];lam_grid=[0.1,1,10];mu_grid=[0.01,0.1,1];beta_grid=[0.01,0.1,1];
+m_grid=[2*c,3*c];lam_grid=[1,10,100];mu_grid=[0.1,1,10,100];beta_grid=[0.01,0.1,1,10,100];
 fprintf('%-4s %-6s %-6s %-6s %-9s %-9s %-9s %-7s\n','m','λ','μ','β','ACC','NMI','Obj','Time');
 fprintf('%-4s %-6s %-6s %-6s %-9s %-9s %-9s %-7s\n','--','----','----','----','---','---','---','----');
 opts_q=struct('max_iter',30,'tol',1e-4,'verbose',false);

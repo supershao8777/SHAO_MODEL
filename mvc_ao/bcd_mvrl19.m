@@ -1,20 +1,23 @@
-function [R, Ps, Q, Z, S, C, obj_history] = bcd_mvrl19(X, m, c, lambda, mu, beta, opts)
-% BCD_MVRL19  Multi-View RL (doubly-stochastic C + simplex S/Z + Q≥0).
+function [R, Ps, Q, Z, S, C, obj_history] = bcd_mvrl19(X, m, c, lambda, mu, gamma, opts)
+% BCD_MVRL19  Multi-View RL with doubly-stochastic alignment C.
 %
-%   [R, Ps, Q, Z, S, C, obj] = bcd_mvrl19(X, m, c, lambda, mu, beta, opts)
+%   [R, Ps, Q, Z, S, C, obj] = bcd_mvrl19(X, m, c, lambda, mu, gamma, opts)
 %
 %   Objective:
 %     J = Σ_v ||X^{(v)} - R^{(v)}(Ps+Q^{(v)})Z^{(v)}||_F^2
-%       + λ Σ_v ||C^{(v)} Ps Z^{(v)} - S||_F^2
-%       + μ Σ_v Tr(D^{(v)T} C^{(v)})
-%       + β Σ_v ||Q^{(v)}||_F^2                          ← ridge on Q
+%       + λ Σ_v ||C^{(v)} Ps Z^{(v)} - S||_F^2     ← aligned consensus
+%       + μ Σ_v Tr(D^{(v)T} C^{(v)})               ← transport cost
+%       + γ Σ_v ||Z^{(v)}||_F^2                    ← ridge
 %
 %   Constraints:
-%     R{v}: d_v×m,  R^T R = I_m,  Ps: m×c, Ps^T Ps=I_c
-%     Q{v}: m×c,    Q ≥ 0,         Z{v}: c×n, col-simplex
-%     S   : m×n,    S S^T = I_m,   C{v}: m×m, doubly stochastic
+%     R{v}: d_v×m,  R^T R = I_m              (Procrustes)
+%     Ps  : m×c,    Ps^T Ps = I_c             (Stiefel GD + SVD)
+%     Q{v}: m×c,    unconstrained             (PGD)
+%     Z{v}: c×n,    unconstrained             (PGD + simplex opt)
+%     S   : m×n,    unconstrained             (mean update)
+%     C{v}: m×m,    doubly stochastic          (Sinkhorn)
 %
-%   Update order: R → Q → Z → Ps → S → C → D
+%   Update order: R → Q → Z → Ps → C
 %   Data: X{v} is d_v × n
 
 %% Options
@@ -30,9 +33,9 @@ V = length(X); [~, n] = size(X{1}); eps_reg = 1e-6;
 
 if verbose
     fprintf('\n========== BCD-MVRL19 ==========\n');
-    fprintf('n=%d, m=%d, c=%d, V=%d, λ=%.4f, μ=%.4f, β=%.4f\n', n, m, c, V, lambda, mu, beta);
-    fprintf('Q≥0, Z/S col-simplex, C: doubly stochastic (Sinkhorn)\n');
-    fprintf('Update: R → Q → Z → Ps → S → C → D\n');
+    fprintf('n=%d, m=%d, c=%d, V=%d, λ=%.4f, μ=%.4f, γ=%.4f\n', n, m, c, V, lambda, mu, gamma);
+    fprintf('C: doubly stochastic (Sinkhorn), Ps: Stiefel, R: Procrustes\n');
+    fprintf('Update: R → Q → Z → Ps → C\n');
 end
 for v = 1:V, assert(size(X{v},2)==n, 'Sample mismatch.'); end
 
@@ -44,11 +47,10 @@ for v=1:V
     if dv>=m,[R{v},~]=qr(randn(dv,m),0);else R{v}=randn(dv,m)/sqrt(dv);end
 end
 [Ps,~]=qr(randn(m,c),0);
-Q=cell(1,V);for v=1:V,Q{v}=max(rand(m,c)*0.1,0);end
-Z=cell(1,V);for v=1:V,Z{v}=proj_simplex(rand(c,n));end
-[S_tmp,~]=qr(randn(n,m),0);S=S_tmp';  % S S^T = I_m
-C=cell(1,V);for v=1:V,C{v}=eye(m)/m+rand(m)*0.01;C{v}=sinkhorn(max(C{v},0));end
-D=cell(1,V);for v=1:V,D{v}=zeros(m,m);end  % computed in Step 7
+Q=cell(1,V);for v=1:V,Q{v}=randn(m,c)*0.01;end
+Z=cell(1,V);for v=1:V,Z{v}=randn(c,n)*0.01;end
+S=zeros(m,n);  % initialized from mean
+C=cell(1,V);for v=1:V,C{v}=eye(m)/m + rand(m)*0.01; C{v}=sinkhorn(max(C{v},0));end
 
 obj_old=Inf;obj_history=zeros(max_iter,1);
 if verbose,fprintf('\n  Iter   Obj            RelChg\n  ----  --------------  ------\n');end
@@ -57,33 +59,30 @@ if verbose,fprintf('\n  Iter   Obj            RelChg\n  ----  --------------  --
 for iter=1:max_iter
     %% Step 1: R (Orthogonal Procrustes)
     for v=1:V
-        Mv=(Ps+Q{v})*Z{v};
+        Bv=Ps+Q{v};Mv=Bv*Z{v};
         [U_R,~,V_R]=svd(X{v}*Mv','econ');
         R{v}=U_R*V_R';
     end
 
-    %% Step 2: Q (PGD + ReLU, with ridge)
-    %   ∇Q = 2 R^T(R(Ps+Q)Z-X)Z^T + 2β Q
+    %% Step 2: Q (PGD)
     for v=1:V
-        L_Q=2*(norm(R{v}'*R{v},2)*norm(Z{v}*Z{v}',2)+beta);eta_Q=1/max(L_Q,eps_reg);
+        L_Q=2*norm(R{v}'*R{v},2)*norm(Z{v}*Z{v}',2);eta_Q=1/max(L_Q,eps_reg);
         for pgd=1:pgd_steps
             Bv=Ps+Q{v};
-            grad_Q=2*R{v}'*(R{v}*Bv*Z{v}-X{v})*Z{v}'+2*beta*Q{v};
-            Q{v}=max(Q{v}-eta_Q*grad_Q,0);
+            grad_Q=2*R{v}'*(R{v}*Bv*Z{v}-X{v})*Z{v}';
+            Q{v}=Q{v}-eta_Q*grad_Q;
         end
     end
 
-    %% Step 3: Z (PGD + simplex)
-    %   ∇Z = 2 B^T R^T(R B Z-X) + 2λ Ps^T C^T(C Ps Z-S)
+    %% Step 3: Z (PGD)
     for v=1:V
         Bv=Ps+Q{v};
-        L_Z=2*(norm(Bv'*R{v}'*R{v}*Bv,2)+lambda*norm(Ps'*C{v}'*C{v}*Ps,2));
+        L_Z=2*(norm(Bv'*R{v}'*R{v}*Bv,2)+lambda*norm(Ps'*C{v}'*C{v}*Ps,2)+gamma);
         eta_Z=1/max(L_Z,eps_reg);
         for pgd=1:pgd_steps
             grad_Z=2*Bv'*R{v}'*(R{v}*Bv*Z{v}-X{v})...
-                  +2*lambda*Ps'*C{v}'*(C{v}*Ps*Z{v}-S);
+                  +2*lambda*Ps'*C{v}'*(C{v}*Ps*Z{v}-S)+2*gamma*Z{v};
             Z{v}=Z{v}-eta_Z*grad_Z;
-            Z{v}=proj_simplex(Z{v});
         end
     end
 
@@ -100,26 +99,28 @@ for iter=1:max_iter
         [U_P,~,V_P]=svd(Ps,'econ');Ps=U_P*V_P';
     end
 
-    %% Step 5: S (Orthogonal Procrustes: S S^T = I_m)
-    F_S=zeros(m,n);
-    for v=1:V,F_S=F_S+C{v}*Ps*Z{v};end
-    F_S=F_S/V;
-    [U_S,~,V_S]=svd(F_S,'econ');S=U_S*V_S';
-
-    %% Step 6: C (PGD + Sinkhorn)
-    %   ∇C = 2λ(C H H^T - S H^T) + μ D
+    %% Step 5: C (gradient descent + Sinkhorn)
+    %   D_{ij}^{(v)} = ||(Ps Z_v)_{i,:} - S_{j,:}||²  [m×m]
+    %   ∇C = 2λ(C H H^T - S H^T) + D where H = Ps Z_v
     for v=1:V
-        Hv=Ps*Z{v};
-        grad_C=2*lambda*(C{v}*Hv*Hv'-S*Hv')+mu*D{v};
+        Hv=Ps*Z{v};                                    % m×n
+        % Distance matrix D
+        D_mat=zeros(m,m);
+        for i=1:m
+            for j=1:m
+                D_mat(i,j)=norm(Hv(i,:)-S(j,:))^2;
+            end
+        end
+        % Gradient
+        grad_C=2*lambda*(C{v}*Hv*Hv'-S*Hv')+D_mat;
         C_tilde=C{v}-eta_c*grad_C;
         C{v}=sinkhorn(max(C_tilde,0));
     end
 
-    %% Step 7: D (distance matrix)
-    for v=1:V
-        Hv=Ps*Z{v};
-        for i=1:m,for j=1:m,D{v}(i,j)=norm(Hv(i,:)-S(j,:))^2;end;end
-    end
+    %% Update S (mean of C·Ps·Z)
+    S=zeros(m,n);
+    for v=1:V,S=S+C{v}*Ps*Z{v};end
+    S=S/V;
 
     %% Objective
     obj=0;
@@ -127,8 +128,11 @@ for iter=1:max_iter
         Bv=Ps+Q{v};Hv=Ps*Z{v};
         obj=obj+norm(X{v}-R{v}*Bv*Z{v},'fro')^2;
         obj=obj+lambda*norm(C{v}*Hv-S,'fro')^2;
-        obj=obj+mu*trace(D{v}'*C{v});
-        obj=obj+beta*norm(Q{v},'fro')^2;
+        % Per-view distance matrix for transport cost
+        Dv=zeros(m,m);
+        for i=1:m,for j=1:m,Dv(i,j)=norm(Hv(i,:)-S(j,:))^2;end;end
+        obj=obj+mu*trace(Dv'*C{v});
+        obj=obj+gamma*norm(Z{v},'fro')^2;
     end
     obj_history(iter)=obj;
     rel_chg=abs(obj_old-obj)/max(1,abs(obj_old));
@@ -143,19 +147,12 @@ if verbose&&iter>=max_iter,fprintf('  Max iters.\n');end
 if verbose,fprintf('=== Summary: Iter=%d Obj=%.4e\n',iter,obj);end
 end
 
-%% Helpers
+%% Sinkhorn: doubly stochastic projection
 function M = sinkhorn(M)
-[m_m,~]=size(M);M=max(M,1e-12);
-for k=1:20,M=M./sum(M,2);M=M./sum(M,1);end
-end
-
-function X=proj_simplex(Z)
-[M,N]=size(Z);X=zeros(M,N);
-for j=1:N
-    z=Z(:,j);u=sort(z,'descend');cs=cumsum(u);
-    rho=find((1:M)'.*u>(cs-1),1,'last');
-    if isempty(rho),rho=1;end
-    theta=(cs(rho)-1)/rho;X(:,j)=max(z-theta,0);
+[m_m, ~]=size(M);M=max(M,1e-12);
+for k=1:20
+    M=M./sum(M,2);
+    M=M./sum(M,1);
 end
 end
 
